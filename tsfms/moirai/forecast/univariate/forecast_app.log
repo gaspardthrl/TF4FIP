@@ -1,0 +1,53 @@
+2024-12-01 12:03:47,442 - INFO - Starting the forecasting process...
+2024-12-01 12:03:47,463 - INFO - Data loaded successfully.
+2024-12-01 12:03:47,463 - INFO - Determining frequency of the dataframe...
+2024-12-01 12:03:47,463 - ERROR - An unexpected error occurred: cannot infer freq from a non-convertible index of dtype int64
+2024-12-01 12:04:18,257 - INFO - Starting the forecasting process...
+2024-12-01 12:04:18,279 - INFO - Data loaded successfully.
+2024-12-01 12:04:18,279 - ERROR - An unexpected error occurred: 'int' object has no attribute 'to_period'
+2024-12-01 12:06:25,409 - INFO - Starting the forecasting process...
+2024-12-01 12:06:25,431 - INFO - Data loaded successfully.
+2024-12-01 12:06:25,431 - ERROR - An unexpected error occurred: 'int' object has no attribute 'to_period'
+2024-12-01 12:08:24,966 - INFO - Starting the forecasting process...
+2024-12-01 12:08:24,988 - INFO - Data loaded successfully.
+2024-12-01 12:08:43,817 - INFO - Model initialized successfully.
+2024-12-01 12:08:43,931 - INFO - Forecast generated successfully.
+2024-12-01 12:08:43,937 - INFO - Prediction results saved to forecast_results.csv
+2024-12-01 12:10:02,585 - INFO - Starting the forecasting process...
+2024-12-01 12:10:02,605 - INFO - Data loaded successfully.
+2024-12-01 12:10:02,606 - ERROR - An unexpected error occurred: 'int' object has no attribute 'to_period'
+2024-12-01 12:10:50,524 - INFO - Starting the forecasting process...
+2024-12-01 12:10:50,545 - INFO - Data loaded successfully.
+2024-12-01 12:10:51,643 - INFO - Model initialized successfully.
+2024-12-01 12:10:51,732 - INFO - Forecast generated successfully.
+2024-12-01 12:10:51,734 - INFO - Prediction results saved to forecast_results.csv
+2024-12-01 12:11:39,224 - INFO - Starting the forecasting process...
+2024-12-01 12:11:39,245 - INFO - Data loaded successfully.
+2024-12-01 12:11:41,459 - INFO - Model initialized successfully.
+2024-12-01 12:11:41,515 - INFO - Forecast generated successfully.
+2024-12-01 12:11:41,518 - INFO - Prediction results saved to forecast_results.csv
+2024-12-01 12:12:59,370 - INFO - Starting the forecasting process...
+2024-12-01 12:12:59,391 - INFO - Data loaded successfully.
+2024-12-01 12:13:00,515 - INFO - Model initialized successfully.
+2024-12-01 12:13:00,608 - INFO - Forecast generated successfully.
+2024-12-01 12:13:00,609 - ERROR - ValueError: Shape of passed values is (48, 1), indices imply (168, 1)
+2024-12-01 12:15:38,643 - INFO - Starting the forecasting process...
+2024-12-01 12:15:38,665 - INFO - Data loaded successfully.
+2024-12-01 12:15:39,328 - INFO - Model initialized successfully.
+2024-12-01 12:15:39,411 - INFO - Forecast generated successfully.
+2024-12-01 12:15:39,414 - INFO - Prediction results saved to forecast_results.csv
+2024-12-01 12:18:09,024 - INFO - Starting the forecasting process...
+2024-12-01 12:18:09,046 - INFO - Data loaded successfully.
+2024-12-01 12:18:09,098 - INFO - Determining frequency of the dataframe...
+2024-12-01 12:18:09,105 - ERROR - ValueError: Tz-aware datetime.datetime cannot be converted to datetime64 unless utc=True, at position 2337
+2024-12-01 12:21:11,272 - INFO - Starting the forecasting process...
+2024-12-01 12:21:11,364 - INFO - Data loaded successfully.
+2024-12-01 12:21:11,364 - INFO - Determining frequency of the dataframe...
+2024-12-01 12:21:11,373 - ERROR - ValueError: Tz-aware datetime.datetime cannot be converted to datetime64 unless utc=True, at position 2337
+2024-12-01 12:22:57,258 - INFO - Starting the forecasting process...
+2024-12-01 12:22:57,350 - INFO - Data loaded successfully.
+2024-12-01 12:22:57,350 - INFO - Determining frequency of the dataframe...
+2024-12-01 12:22:57,371 - INFO - Determined frequency: H
+2024-12-01 12:22:58,412 - INFO - Model initialized successfully.
+2024-12-01 12:22:58,485 - INFO - Forecast generated successfully.
+2024-12-01 12:22:58,488 - INFO - Prediction results saved to forecast_results.csv
