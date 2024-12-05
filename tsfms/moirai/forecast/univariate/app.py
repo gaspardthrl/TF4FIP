@@ -6,7 +6,6 @@ import logging
 import os
 from uni2ts.model.moirai import MoiraiForecast, MoiraiModule
 from einops import rearrange
-import pandas.tseries.frequencies as freqs
 
 def setup_logging():
     logging.basicConfig(
@@ -30,7 +29,6 @@ def load_data(file_path, target_column):
 def determine_frequency(df):
     if args.utc:
         df.index = pd.to_datetime(df.index, utc=True)
-        
     inferred_freq = pd.infer_freq(df.index)
     if inferred_freq is None:
         raise ValueError("Could not determine the frequency of the dataframe index. Please specify the frequency explicitly.")
@@ -48,6 +46,7 @@ def main(args):
         # Determine the frequency
         if args.frequency:
             frequency = args.frequency
+            logging.info(f"Determined frequency: {frequency}")
         else:
             logging.info("Determining frequency of the dataframe...")
             frequency = determine_frequency(df)
