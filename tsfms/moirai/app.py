@@ -53,8 +53,8 @@ def main(args):
             logging.info(f"Determined frequency: {frequency}")
 
         # Extract input and label for prediction
-        if len(df) < args.context_length + args.prediction_length:
-            raise ValueError(f"The provided dataset is too short for the specified context and prediction length. Required: {args.context_length + args.prediction_length}, Available: {len(df)}")
+        if len(df) < args.context_length:
+            raise ValueError(f"The provided dataset is too short for the specified context and prediction length. Required: {args.context_length}, Available: {len(df)}")
         
         inp = {
             "target": df[args.column].to_numpy()[-args.context_length:],  # Context length
