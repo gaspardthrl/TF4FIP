@@ -129,11 +129,7 @@ def process_sliding_windows(df, args):
             )
         }
 
-        for future in tqdm(
-            concurrent.futures.as_completed(future_to_window),
-            total=len(future_to_window),
-            desc="Processing sliding windows",
-        ):
+        for future in concurrent.futures.as_completed(future_to_window):
             context_df, prediction_df = future_to_window[future]
             try:
                 result = future.result()
