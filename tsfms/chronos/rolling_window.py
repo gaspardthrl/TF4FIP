@@ -6,9 +6,20 @@ import os
 import numpy as np
 import pandas as pd
 import torch
+from chronos import ChronosPipeline
 from einops import rearrange
-from uni2ts.model.moirai import MoiraiForecast, MoiraiModule
-from uni2ts.model.moirai_moe import MoiraiMoEForecast, MoiraiMoEModule
+from tqdm import tqdm
+
+# from uni2ts.src.uni2ts.model.moirai import MoiraiForecast, MoiraiModule
+# from uni2ts.src.uni2ts.model.moirai_moe import MoiraiMoEForecast, MoiraiMoEModule
+
+# TODO
+# 1. Modify the make_prediction to use Chronos instead of MoiraiForecast
+## 1.1 Need to adapt the input and maybe the output it depends
+# 2. Verify that we look for the median
+
+
+# nohup python rolling_window.py --path "../../data/ES=F.csv" --column "Close_denoised_standardized" --prediction_length 16 --context_length 384 --frequency "H" --utc True
 
 
 def setup_logging():
@@ -58,45 +69,40 @@ def sliding_window(df, context_length, prediction_length):
 # Prediction wrapper function
 def make_prediction(context_df, prediction_df, index, args):
     """Wrapper to call the prediction function for each sliding window."""
+
     inp = {
         "target": context_df[args.column].to_numpy(),
         "start": context_df.index[0].to_period(freq=args.frequency),
     }
 
-    model = MoiraiForecast(
-        module=MoiraiModule.from_pretrained(
-            f"Salesforce/moirai-{args.model_version}-{args.model_size}"
-        ),
-        prediction_length=args.prediction_length,
-        context_length=args.context_length,
-        patch_size=args.patch_size,
+    # Determine backend
+    backend = args.backend
+    if backend == "gpu" and not torch.cuda.is_available():
+        logging.warning(
+            "GPU backend specified but CUDA is not available. Falling back to CPU."
+        )
+        backend = "cpu"
+
+    model = ChronosPipeline.from_pretrained(
+        "amazon/chronos-t5-large", device_map=backend, torch_dtype=torch.bfloat16
+    )
+
+    # Chronos expects a 1D tensor (or list of 1D tensors) for the context
+    context_tensor = torch.as_tensor(inp["target"], dtype=torch.float32)
+
+    forecast = model.predict(
+        context_tensor,
+        args.prediction_length,
         num_samples=args.num_samples,
-        target_dim=1,
-        feat_dynamic_real_dim=0,
-        past_feat_dynamic_real_dim=0,
     )
 
-    # Prepare the input tensors
-    past_target = rearrange(
-        torch.as_tensor(inp["target"], dtype=torch.float32), "t -> 1 t 1"
-    )
-    past_observed_target = torch.ones_like(past_target, dtype=torch.bool)
-    past_is_pad = torch.zeros_like(past_target, dtype=torch.bool).squeeze(-1)
-
-    # Make the forecast
-    forecast = model(
-        past_target=past_target,
-        past_observed_target=past_observed_target,
-        past_is_pad=past_is_pad,
-    )
-
-    # Process the output
+    forecast_np = forecast[0].numpy()
     if args.return_type == "median":
-        result = np.round(np.median(forecast[0], axis=0), decimals=4)
+        result = np.round(np.median(forecast_np, axis=0), decimals=4)
     elif args.return_type == "median_quartile":
-        median = np.median(forecast[0], axis=0)
-        q1 = np.percentile(forecast[0], 25, axis=0)
-        q3 = np.percentile(forecast[0], 75, axis=0)
+        median = np.median(forecast_np, axis=0)
+        q1 = np.percentile(forecast_np, 25, axis=0)
+        q3 = np.percentile(forecast_np, 75, axis=0)
         result = {
             "median": np.round(median, decimals=4),
             "q1": np.round(q1, decimals=4),
@@ -123,7 +129,11 @@ def process_sliding_windows(df, args):
             )
         }
 
-        for future in concurrent.futures.as_completed(future_to_window):
+        for future in tqdm(
+            concurrent.futures.as_completed(future_to_window),
+            total=len(future_to_window),
+            desc="Processing sliding windows",
+        ):
             context_df, prediction_df = future_to_window[future]
             try:
                 result = future.result()
@@ -154,6 +164,12 @@ def main(args):
             logging.info(f"Determined frequency: {frequency}")
 
         args.frequency = frequency  # Ensure frequency is set for downstream processes
+
+        # For testing purposes, process only a subset of the data.
+        # Ensure that we have enough rows: context_length + prediction_length + a few extra rows for sliding windows.
+        subset_rows = args.context_length + args.prediction_length + 10
+        df = df.head(subset_rows)
+        logging.info(f"Processing a subset of the data: first {subset_rows} rows.")
 
         # Process sliding windows concurrently
         results = process_sliding_windows(df, args)
@@ -256,9 +272,9 @@ def main(args):
         logging.error(f"An unexpected error occurred: {e}")
 
 
-if name == "__main__":
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Run Moirai Forecast on a given time series dataset."
+        description="Run Chronos Forecast on a given time series dataset."
     )
     parser.add_argument(
         "--path",
@@ -275,18 +291,13 @@ if name == "__main__":
     parser.add_argument(
         "--column", type=str, required=True, help="Name of the column to be predicted."
     )
+
     parser.add_argument(
-        "--model_version",
+        "--backend",
         type=str,
-        default="1.1-R",
-        help="Model version to be used (e.g., 1.1-R).",
-    )
-    parser.add_argument(
-        "--model_size",
-        type=str,
-        choices=["small", "base", "large"],
-        default="base",
-        help="Size of the model (small, base, large).",
+        choices=["gpu", "cpu"],
+        default="gpu",
+        help="Backend to use for model inference (gpu or cpu).",
     )
     parser.add_argument(
         "--prediction_length", type=int, default=48, help="Length of the prediction."
