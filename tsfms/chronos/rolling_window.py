@@ -84,7 +84,7 @@ def make_prediction(context_df, prediction_df, index, args):
         backend = "cpu"
 
     model = ChronosPipeline.from_pretrained(
-        "amazon/chronos-t5-large", device_map=backend, torch_dtype=torch.bfloat16
+        "amazon/chronos-t5-small", device_map=backend, torch_dtype=torch.bfloat16
     )
 
     # Chronos expects a 1D tensor (or list of 1D tensors) for the context

@@ -136,7 +136,7 @@ if __name__ == "__main__":
     parser.add_argument("--frequency", type=str, help="Frequency of the time series data (e.g., 'H' for hourly). If not provided, it will be inferred.")
     parser.add_argument("--backend", type=str, choices=["gpu", "cpu"], default="gpu", help="Backend to use for model inference (gpu or cpu).")
     parser.add_argument("--batch", action="store_true", help="Indicates if the dataset contains multiple time series (batch mode).")
-    parser.add_argument("--model", type=str, default="amazon/chronos-t5-small", help="Name of the Chronos model to be used (e.g., 'amazon/chronos-t5-large').")
+    parser.add_argument("--model", type=str, default="amazon/chronos-t5-large", help="Name of the Chronos model to be used (e.g., 'amazon/chronos-t5-large').")
     args = parser.parse_args()
     main(args)
 
