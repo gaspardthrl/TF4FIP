@@ -10,16 +10,12 @@ from chronos import ChronosPipeline
 from einops import rearrange
 from tqdm import tqdm
 
-# from uni2ts.src.uni2ts.model.moirai import MoiraiForecast, MoiraiModule
-# from uni2ts.src.uni2ts.model.moirai_moe import MoiraiMoEForecast, MoiraiMoEModule
-
 # TODO
 # 1. Modify the make_prediction to use Chronos instead of MoiraiForecast
 ## 1.1 Need to adapt the input and maybe the output it depends
 # 2. Verify that we look for the median
 
-
-# nohup python rolling_window.py --path "../../data/ES=F.csv" --column "Close_denoised_standardized" --prediction_length 16 --context_length 384 --frequency "H" --utc True
+# nohup python rolling_window.py --path "../../data/ES=F.csv" --column "Close_denoised_standardized" --prediction_length 12 --context_length 384 --frequency "H" --utc True
 
 
 def setup_logging():
@@ -161,13 +157,6 @@ def main(args):
 
         args.frequency = frequency  # Ensure frequency is set for downstream processes
 
-        # For testing purposes, process only a subset of the data.
-        # Ensure that we have enough rows: context_length + prediction_length + a few extra rows for sliding windows.
-        subset_rows = args.context_length + args.prediction_length + 10
-        df = df.head(subset_rows)
-        logging.info(f"Processing a subset of the data: first {subset_rows} rows.")
-
-        # Process sliding windows concurrently
         results = process_sliding_windows(df, args)
         logging.info(f"Sliding Window processed.")
 
