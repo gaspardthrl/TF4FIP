@@ -72,8 +72,10 @@ def main(args):
         logging.info("Time-MoE model initialized successfully.")
         
         # Prepare the Time-MoE input
-        seqs = df[args.column].to_numpy()[-args.context_length:]
+        seqs = df[args.column].to_numpy()[-args.context_length:] # Selects the last context_length elements from the NumPy array
         seqs_tensor = torch.tensor(seqs, dtype=torch.float32, device=device).unsqueeze(0)  # [1, context_length]
+        
+        # Normalize the input
         mean, std = seqs_tensor.mean(dim=-1, keepdim=True), seqs_tensor.std(dim=-1, keepdim=True)
         normed_seqs = (seqs_tensor - mean) / std
         

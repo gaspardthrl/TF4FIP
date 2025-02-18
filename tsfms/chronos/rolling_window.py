@@ -6,16 +6,11 @@ import os
 import numpy as np
 import pandas as pd
 import torch
-from chronos import ChronosPipeline
+from chronos import BaseChronosPipeline
 from einops import rearrange
 from tqdm import tqdm
 
-# TODO
-# 1. Modify the make_prediction to use Chronos instead of MoiraiForecast
-## 1.1 Need to adapt the input and maybe the output it depends
-# 2. Verify that we look for the median
-
-# nohup python rolling_window.py --path "../../data/ES=F.csv" --column "Close_denoised_standardized" --prediction_length 12 --context_length 384 --frequency "H" --utc True
+# python rolling_window.py --path "../../data/ES=F.csv" --input_column "Close_denoised_standardized" --output_column "Close" --prediction_length 12 --context_length 384 --frequency "H" --utc True --output "test_path.csv"
 
 
 def setup_logging():
@@ -26,15 +21,17 @@ def setup_logging():
     )
 
 
-def load_data(file_path, target_column):
-    # Load the data from the CSV file
+def load_data(file_path, input_colum, output_column):
+    # Load the data from the CSV file and verify the required column exist
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"The file was not found.")
     df = pd.read_csv(file_path, parse_dates=True, index_col=0)
-    if target_column not in df.columns:
-        raise ValueError(
-            f"The specified column '{target_column}' does not exist in the provided dataset."
-        )
+
+    # Ensure both raw and transformed columns exist
+    required_columns = [input_colum, output_column]
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        raise ValueError(f"Missing required columns: {missing_columns}")
     return df
 
 
@@ -52,22 +49,42 @@ def determine_frequency(df):
 # Sliding window function
 def sliding_window(df, context_length, prediction_length):
     """Generates context and prediction dataframes for each sliding window."""
-    for start in range(len(df) - context_length - prediction_length + 1):
-        context_end = start + context_length
-        prediction_end = context_end + prediction_length
+    for context_start in range(len(df) - context_length - prediction_length + 1):
+        context_end = context_start + context_length  # end of the context window
+        prediction_end = context_end + prediction_length  # end of the prediction window
 
-        context_df = df.iloc[start:context_end]
-        prediction_df = df.iloc[context_end:prediction_end]
+        context_df = df.iloc[context_start:context_end]
+        prediction_df = df.iloc[
+            context_end:prediction_end
+        ]  # prediction_df represents the actual future values that the model is trying to predict
 
         yield context_df, prediction_df, df.index[context_end]
 
 
+def destandardize_predictions(standardized_predictions, df):
+    """
+    Transform standardized predictions back to the original price scale.
+    Uses the statistics from the context window to reverse the standardization.
+
+    Args:
+        standardized_predictions: Model predictions in standardized space
+        context_df: DataFrame containing the context window data
+    """
+
+    # Reverse standardization: X_original = (X_standardized * std) + mean
+    return (
+        standardized_predictions * df["Close_denoised"].std()
+        + df["Close_denoised"].mean()
+    )
+
+
 # Prediction wrapper function
-def make_prediction(context_df, prediction_df, index, args):
+def make_prediction(context_df, prediction_df, index, df, args):
     """Wrapper to call the prediction function for each sliding window."""
 
+    # We take the context_length (default: 384) last close denoized standardized prices to predict the next prediction_length values
     inp = {
-        "target": context_df[args.column].to_numpy(),
+        "target": context_df[args.input_column].to_numpy(),
         "start": context_df.index[0].to_period(freq=args.frequency),
     }
 
@@ -79,30 +96,48 @@ def make_prediction(context_df, prediction_df, index, args):
         )
         backend = "cpu"
 
-    model = ChronosPipeline.from_pretrained(
-        "amazon/chronos-t5-small", device_map=backend, torch_dtype=torch.bfloat16
+    model = BaseChronosPipeline.from_pretrained(
+        "amazon/chronos-bolt-small",
+        device_map=backend,
+        torch_dtype=torch.bfloat16,
     )
 
     # Chronos expects a 1D tensor (or list of 1D tensors) for the context
     context_tensor = torch.as_tensor(inp["target"], dtype=torch.float32)
 
+    # return an array containing the median of the forecast => meaning 9 quantiles in total => each quantile contains the prediction for the next prediction_length hours
     forecast = model.predict(
         context_tensor,
         args.prediction_length,
-        num_samples=args.num_samples,
-    )
+        # num_samples=args.num_samples
+    )  # the output has the shape: (batch_size, num_quantiles, prediction_length)
+    # for example: [ (batch size is 1)
+    #                  [-1.21, -1.18, -1.17, -1.13, -1.24, -1.21, -1.18, -1.17, -1.13, -1.24, -1.18, -1.17], # we have 12 values (12 horizons for every quantile)
+    #                  [...], [...], [...], [...], [...], [...], [...], [...]
+    #               ]
 
-    forecast_np = forecast[0].numpy()
+    # This creates a quantile x prediction_length array (do by default a 9 x 12 array)
+    # Each column contains the quantile values for a specific horizon
+    forecast_np = forecast[
+        0
+    ].numpy()  # forecast[0] returns the results with shape (num_quantiles, prediction_length/horizon)
+
     if args.return_type == "median":
-        result = np.round(np.median(forecast_np, axis=0), decimals=4)
+        standardized_result = np.round(
+            np.median(forecast_np, axis=0), decimals=4
+        )  # TODO I think we can take the value corresponding to the quantile 0.5 (median)
+        # Transform predictions back to original price scale
+        result = destandardize_predictions(standardized_result, df)
     elif args.return_type == "median_quartile":
         median = np.median(forecast_np, axis=0)
         q1 = np.percentile(forecast_np, 25, axis=0)
         q3 = np.percentile(forecast_np, 75, axis=0)
+
+        # Transform all quantiles back to original price scale
         result = {
-            "median": np.round(median, decimals=4),
-            "q1": np.round(q1, decimals=4),
-            "q3": np.round(q3, decimals=4),
+            "median": np.round(destandardize_predictions(median, df), decimals=4),
+            "q1": np.round(destandardize_predictions(q1, df), decimals=4),
+            "q3": np.round(destandardize_predictions(q3, df), decimals=4),
         }
     else:
         raise ValueError(f"Unknown return_type: {args.return_type}")
@@ -110,13 +145,17 @@ def make_prediction(context_df, prediction_df, index, args):
     return result
 
 
-# Concurrent processing of sliding windows
 def process_sliding_windows(df, args):
-    """Processes sliding windows concurrently using a ProcessPoolExecutor."""
+    """Processes sliding windows concurrently using a ProcessPoolExecutor.
+    We take the context_length (default: 384) last close denoised standardized prices to predict the next prediction_length values
+    """
+
     results = []
     with concurrent.futures.ProcessPoolExecutor() as executor:
         future_to_window = {
-            executor.submit(make_prediction, context_df, prediction_df, index, args): (
+            executor.submit(
+                make_prediction, context_df, prediction_df, index, df, args
+            ): (
                 context_df,
                 prediction_df,
             )
@@ -143,7 +182,11 @@ def main(args):
         logging.info("Starting the forecasting process...")
 
         # Load the data
-        df = load_data(args.path, args.column)
+        df = load_data(
+            file_path=args.path,
+            input_column=args.input_column,
+            output_column=args.output_column,
+        )
         logging.info("Data loaded successfully.")
 
         # Determine the frequency
@@ -171,7 +214,7 @@ def main(args):
             APE = list(
                 map(
                     lambda x: 100 * abs(x[0] - x[1]) / abs(x[0]),
-                    zip(prediction_df[args.column].values, result),
+                    zip(prediction_df[args.output_column].values, result),
                 )
             )
 
@@ -179,9 +222,10 @@ def main(args):
                 map(
                     lambda x: 1 if np.sign(x[2] - x[0]) == np.sign(x[2] - x[1]) else -1,
                     zip(
-                        prediction_df[args.column].values,
-                        result,
-                        [context_df[args.column].values[-1]] * len(result),
+                        prediction_df[args.output_column].values,
+                        result,  # De-standardized predictions
+                        [context_df[args.output_column].values[-1]]
+                        * len(result),  # Last raw close price
                     ),
                 )
             )
@@ -210,9 +254,9 @@ def main(args):
                         )
                     ),
                     zip(
-                        prediction_df[args.column].values,
+                        prediction_df[args.output_column].values,
                         result,
-                        [context_df[args.column].values[-1]] * len(result),
+                        [context_df[args.output_column].values[-1]] * len(result),
                     ),
                 )
             )
@@ -274,7 +318,17 @@ if __name__ == "__main__":
         help="Whether the dataframe is timezone-aware.",
     )
     parser.add_argument(
-        "--column", type=str, required=True, help="Name of the column to be predicted."
+        "--input_column",
+        type=str,
+        required=True,
+        help="Name of the column to be predicted.",
+    )
+
+    parser.add_argument(
+        "--output_column",
+        type=str,
+        required=True,
+        help="Name of the column used for comparison.",
     )
 
     parser.add_argument(

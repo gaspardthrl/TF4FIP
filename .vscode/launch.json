@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Rolling Window Raw",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/tsfms/chronos/rolling_window_raw.py",
+      "args": [
+        "--path",
+        "${workspaceFolder}/data/ES=F.csv",
+        "--column",
+        "Close_denoised_standardized",
+        "--prediction_length",
+        "12",
+        "--context_length",
+        "384",
+        "--frequency",
+        "H",
+        "--utc",
+        "True",
+        "--output",
+        "test_path.csv"
+      ],
+      "console": "integratedTerminal"
+    }
+  ]
+}

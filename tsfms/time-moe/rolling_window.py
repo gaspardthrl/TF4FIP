@@ -1,4 +1,4 @@
-import argparse
+import argparse#
 import concurrent.futures
 import logging
 import os
@@ -7,9 +7,9 @@ import numpy as np
 import pandas as pd
 import torch
 from einops import rearrange
-from uni2ts.model.moirai import MoiraiForecast, MoiraiModule
+from transformers import AutoModelForCausalLM
 
-# python rolling_window.py --path "../../data/ES=F.csv" --input_column "Close_denoised_standardized" --output_column "Close" --prediction_length 12 --context_length 384 --frequency "H" --utc True --output "es_future_final_moirai_test.csv"
+# python rolling_window.py --path "../../data/ES=F.csv" --input_column "Close_denoised_standardized" --output_column "Close" --prediction_length 12 --context_length 384 --frequency "H" --utc True --output "es_future_final_time_moe_test.csv"
 
 def setup_logging():
     logging.basicConfig(
@@ -51,7 +51,7 @@ def sliding_window(df, context_length, prediction_length):
         context_end = context_start + context_length  # end of the context window
         prediction_end = context_end + prediction_length  # end of the prediction window
 
-        context_df = df.iloc[context_start:context_end]
+        context_df = df.iloc[context_start:context_end]#
         prediction_df = df.iloc[
             context_end:prediction_end
         ]  # prediction_df represents the actual future values that the model is trying to predict
@@ -87,38 +87,30 @@ def make_prediction(context_df, prediction_df, index, df, args):
         "start": context_df.index[0].to_period(freq=args.frequency),
     }
 
-    model = MoiraiForecast(
-        module=MoiraiModule.from_pretrained(
-            f"Salesforce/moirai-{args.model_version}-{args.model_size}"
-        ),
-        prediction_length=args.prediction_length,
-        context_length=args.context_length,
-        patch_size=args.patch_size,
-        num_samples=args.num_samples,
-        target_dim=1,
-        feat_dynamic_real_dim=0,
-        past_feat_dynamic_real_dim=0,
-    )
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if device == 'cpu':
+        logging.warning("CUDA is not available. Running on CPU, which may be slower.")
+    else:
+        logging.warning("CUDA available.")
 
-    # Prepare the input tensors
-    past_target = rearrange(
-        torch.as_tensor(inp["target"], dtype=torch.float32), "t -> 1 t 1"
+    model_timemoe = AutoModelForCausalLM.from_pretrained(
+        'Maple728/TimeMoE-200M',
+        device_map=device,
+        trust_remote_code=True,
     )
-    past_observed_target = torch.ones_like(past_target, dtype=torch.bool)
-    past_is_pad = torch.zeros_like(past_target, dtype=torch.bool).squeeze(-1)
+    logging.info("Time-MoE model initialized successfully.")
 
-    # Make the forecast
-    forecast = model(
-        past_target=past_target,
-        past_observed_target=past_observed_target,
-        past_is_pad=past_is_pad,
-    )
+    context_tensor = torch.tensor(inp["target"], dtype=torch.float32, device=device).unsqueeze(0)
+    
+    # Forecast using Time-MoE
+    forecast = model_timemoe.generate(context_tensor, max_new_tokens=args.prediction_length)
+    forecast_np = forecast[:, -args.prediction_length:].cpu().numpy().reshape(args.prediction_length, -1) 
 
     # Process the output
     if args.return_type == "median":
         standardized_result = np.round(
-            np.median(forecast[0], axis=0), decimals=4
-        )  # TODO I think we can take the value corresponding to the quantile 0.5 (median)
+            np.median(forecast_np[:, 0], axis=0), decimals=4
+        )
         # Transform predictions back to original price scale
         result = destandardize_predictions(standardized_result, df)
     elif args.return_type == "median_quartile":
@@ -173,8 +165,7 @@ def main(args):
         logging.info("Starting the forecasting process...")
 
         # Load the data
-        df = load_data(file_path=args.path, input_column=args.input_column, output_column=args.output_column)
-        
+        df = load_data(file_path = args.path, input_column=args.input_column, output_column=args.output_column)
         logging.info("Data loaded successfully.")
 
         # Determine the frequency
