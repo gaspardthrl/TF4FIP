@@ -21,14 +21,14 @@ def setup_logging():
     )
 
 
-def load_data(file_path, input_colum, output_column):
+def load_data(file_path, input_column, output_column):
     # Load the data from the CSV file and verify the required column exist
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"The file was not found.")
     df = pd.read_csv(file_path, parse_dates=True, index_col=0)
 
     # Ensure both raw and transformed columns exist
-    required_columns = [input_colum, output_column]
+    required_columns = [input_column, output_column]
     missing_columns = [col for col in required_columns if col not in df.columns]
     if missing_columns:
         raise ValueError(f"Missing required columns: {missing_columns}")
@@ -54,11 +54,12 @@ def sliding_window(df, context_length, prediction_length):
         prediction_end = context_end + prediction_length  # end of the prediction window
 
         context_df = df.iloc[context_start:context_end]
-        prediction_df = df.iloc[
+        ground_truth_df = df.iloc[
             context_end:prediction_end
-        ]  # prediction_df represents the actual future values that the model is trying to predict
+        ]  # ground_truth_df represents the actual future values that the model is trying to predict
 
-        yield context_df, prediction_df, df.index[context_end]
+        # TODO there is no reason to output the full dataframe only the required data is needed
+        yield context_df, ground_truth_df, df.index[context_end]
 
 
 def destandardize_predictions(standardized_predictions, df):
@@ -79,7 +80,7 @@ def destandardize_predictions(standardized_predictions, df):
 
 
 # Prediction wrapper function
-def make_prediction(context_df, prediction_df, index, df, args):
+def make_prediction(context_df, df, args):
     """Wrapper to call the prediction function for each sliding window."""
 
     # We take the context_length (default: 384) last close denoized standardized prices to predict the next prediction_length values
@@ -143,37 +144,49 @@ def make_prediction(context_df, prediction_df, index, df, args):
         raise ValueError(f"Unknown return_type: {args.return_type}")
 
     return result
+    # It returns an array of 12 predictions corresponding to the twelve horizons
+
+# def process_sliding_windows(df, args):
+#     """Processes sliding windows concurrently using a ProcessPoolExecutor.
+#     We take the context_length (default: 384) last close denoised standardized prices to predict the next prediction_length values
+#     """
+
+#     results = []
+#     with concurrent.futures.ProcessPoolExecutor() as executor:
+#         future_to_window = {
+#             executor.submit(
+#                 make_prediction, context_df, df, args
+#             ): (
+#                 context_df,
+#                 ground_truth_df,
+#             )
+#             for context_df, ground_truth_df, index in sliding_window(
+#                 df, args.context_length, args.prediction_length
+#             )
+#         }
+
+#         for future in concurrent.futures.as_completed(future_to_window):
+#             context_df, ground_truth_df = future_to_window[future]
+#             try:
+#                 result = future.result()
+#                 results.append((context_df, ground_truth_df, result))
+#             except Exception as e:
+#                 logging.error(f"Error during prediction: {e}")
+
+#     return results
 
 
+# Delete this version -- it's for test purpose. It doesn't use concurrency
 def process_sliding_windows(df, args):
-    """Processes sliding windows concurrently using a ProcessPoolExecutor.
-    We take the context_length (default: 384) last close denoised standardized prices to predict the next prediction_length values
-    """
-
     results = []
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        future_to_window = {
-            executor.submit(
-                make_prediction, context_df, prediction_df, index, df, args
-            ): (
-                context_df,
-                prediction_df,
-            )
-            for context_df, prediction_df, index in sliding_window(
-                df, args.context_length, args.prediction_length
-            )
-        }
 
-        for future in concurrent.futures.as_completed(future_to_window):
-            context_df, prediction_df = future_to_window[future]
-            try:
-                result = future.result()
-                results.append((context_df, prediction_df, result))
-            except Exception as e:
-                logging.error(f"Error during prediction: {e}")
-
-    return results
-
+    for context_df, ground_truth_df, index in sliding_window(
+            df, args.context_length, args.prediction_length
+        ):
+        result = make_prediction(context_df, df, args)
+        results.append((context_df, ground_truth_df, result))
+    
+    return results # return a tuple containing the full dataframe for context, ground truth (for prediction_length periods) and the prediction (for prediction_length period)
 
 # Integrating the new functionality into main
 def main(args):
@@ -210,23 +223,23 @@ def main(args):
             else f"new_results_{args.path[:-4]}_{args.context_length}.csv"
         )
         all_results = []
-        for context_df, prediction_df, result in results:
+        for context_df, ground_truth_df, result in results:
             APE = list(
                 map(
                     lambda x: 100 * abs(x[0] - x[1]) / abs(x[0]),
-                    zip(prediction_df[args.output_column].values, result),
+                    zip(ground_truth_df[args.output_column].values, result),
                 )
             )
 
             SIGN = list(
                 map(
-                    lambda x: 1 if np.sign(x[2] - x[0]) == np.sign(x[2] - x[1]) else -1,
+                    lambda x: 1 if np.sign(x[2] - x[0]) == np.sign(x[2] - x[1]) else -1, # 1 if the prediction is in the same direction as the real price, -1 otherwise
                     zip(
-                        prediction_df[args.output_column].values,
-                        result,  # De-standardized predictions
-                        [context_df[args.output_column].values[-1]]
+                        ground_truth_df[args.output_column].values,
+                        result,  # De-standardized predictions # real end price
+                        [context_df[args.output_column].values[-1]] #base value 
                         * len(result),  # Last raw close price
-                    ),
+                    ), 
                 )
             )
 
@@ -254,7 +267,7 @@ def main(args):
                         )
                     ),
                     zip(
-                        prediction_df[args.output_column].values,
+                        ground_truth_df[args.output_column].values,
                         result,
                         [context_df[args.output_column].values[-1]] * len(result),
                     ),

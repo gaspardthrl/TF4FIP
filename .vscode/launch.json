@@ -2,15 +2,17 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Rolling Window Raw",
+      "name": "Rolling Window Debug",
       "type": "python",
       "request": "launch",
-      "program": "${workspaceFolder}/tsfms/chronos/rolling_window_raw.py",
+      "program": "${workspaceFolder}/tsfms/chronos/rolling_window.py",
       "args": [
         "--path",
         "${workspaceFolder}/data/ES=F.csv",
-        "--column",
+        "--input_column",
         "Close_denoised_standardized",
+        "--output_column",
+        "Close",
         "--prediction_length",
         "12",
         "--context_length",
@@ -20,7 +22,7 @@
         "--utc",
         "True",
         "--output",
-        "test_path.csv"
+        "test_result_debug.csv"
       ],
       "console": "integratedTerminal"
     }
