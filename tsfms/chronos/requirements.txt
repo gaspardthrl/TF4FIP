@@ -1,9 +1,0 @@
-git+https://github.com/amazon-science/chronos-forecasting.git
-pandas
-numpy
-torch
-matplotlib
-scikit-learn
-einops
-lightning
-chronos-forecasting
