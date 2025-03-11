@@ -1,6 +1,6 @@
 *.log
 *.DS_Store
-*.csv
+#*.csv
 .env
 venv/
 __pycache__/
