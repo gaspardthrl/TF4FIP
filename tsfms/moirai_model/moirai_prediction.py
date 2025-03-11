@@ -14,10 +14,7 @@ def make_prediction(context_df, ground_truth_df, df, args):
     to predict the next `args.prediction_length` values.
     """
     # Convert the input data
-    inp = {
-        "target": context_df[args.input_column].to_numpy(),
-        "start": context_df.index[0].tz_localize(None).to_period(freq=args.frequency),
-    }
+    context = context_df[args.input_column].to_numpy()
 
     # If GPU is selected but no CUDA available, fallback to CPU
     backend = args.backend
@@ -36,9 +33,7 @@ def make_prediction(context_df, ground_truth_df, df, args):
         past_feat_dynamic_real_dim=0,
     )
 
-    past_target = rearrange(
-        torch.as_tensor(inp["target"], dtype=torch.float32), "t -> 1 t 1"
-    )
+    past_target = rearrange(torch.as_tensor(context, dtype=torch.float32), "t -> 1 t 1")
     past_observed_target = torch.ones_like(past_target, dtype=torch.bool)
     past_is_pad = torch.zeros_like(past_target, dtype=torch.bool).squeeze(-1)
 

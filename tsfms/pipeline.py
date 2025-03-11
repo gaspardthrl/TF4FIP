@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import logging
 import os
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -12,7 +13,7 @@ from chronos_model.chronos_prediction import make_prediction as chronos_pred
 from moirai_model.moirai_prediction import make_prediction as moirai_pred
 from time_moe_model.time_moe_prediction import make_prediction as timemoe_pred
 
-# python -m pipeline --path "../data/ES=F.csv" --input_column "Close_denoised_standardized" --output_column "Close" --prediction_length 12 --context_length 384 --frequency "H" --utc True --output "first_test.csv" --model_name "chronos"
+# python -m pipeline --path "data/data_2024_2025_processed.csv" --input_column "Close" --output_column "Close" --prediction_length 12 --context_length 384 --frequency "H" --utc True --output "first_test.csv" --model_name "time_moe"
 
 ###############################################################################
 # Common utility functions
@@ -140,6 +141,11 @@ def main(args):
     # 4. Sliding window predictions (concurrent)
     results = process_sliding_windows(df, args, prediction_func)
     logging.info(f"Sliding Window processing finished. {len(results)} windows found.")
+
+    # Save results for backup
+    with open("results_backup.pkl", "wb") as f:
+        pickle.dump(results, f)
+    logging.info("Intermediate results saved successfully.")
 
     # 5. Build final result dataframe
     all_results = []

@@ -1,7 +1,7 @@
-import logging
-import torch
 import numpy as np
+import torch
 from transformers import AutoModelForCausalLM
+
 
 def make_prediction(context_df, ground_truth_df, df, args):
     """
@@ -10,10 +10,7 @@ def make_prediction(context_df, ground_truth_df, df, args):
     to predict the next `args.prediction_length` values.
     """
 
-    inp = {
-        "target": context_df[args.input_column].to_numpy(),
-        "start": context_df.index[0].tz_localize(None).to_period(freq=args.frequency),
-    }
+    context = context_df[args.input_column].to_numpy()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -26,7 +23,7 @@ def make_prediction(context_df, ground_truth_df, df, args):
 
     # Prepare context
     context_tensor = torch.tensor(
-        inp["target"], dtype=torch.float32, device=device
+        context, dtype=torch.float32, device=device
     ).unsqueeze(0)
 
     # Generate forecast
@@ -43,8 +40,8 @@ def make_prediction(context_df, ground_truth_df, df, args):
     if args.return_type == "median":
         # The script suggests you were taking the median over forecast_np[:, 0]
         # (which is effectively a single column, but you can adapt if needed)
-        standardized_result = np.round(np.median(forecast_np[:, 0], axis=0), decimals=4)
-        result = destandardize_predictions(standardized_result, df)
+        result = np.round(np.median(forecast_np[:, 0], axis=0), decimals=4)
+        # result = destandardize_predictions(result, df)
     elif args.return_type == "median_quartile":
         median = np.median(forecast_np[:, 0], axis=0)
         q1 = np.percentile(forecast_np[:, 0], 25, axis=0)

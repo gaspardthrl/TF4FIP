@@ -13,10 +13,7 @@ def make_prediction(context_df, ground_truth_df, df, args):
     to predict the next `args.prediction_length` values.
     """
 
-    inp = {
-        "target": context_df[args.input_column].to_numpy(),
-        "start": context_df.index[0].tz_localize(None).to_period(freq=args.frequency),
-    }
+    context = context_df[args.input_column].to_numpy()
 
     backend = args.backend
     if backend == "gpu" and not torch.cuda.is_available():
@@ -29,7 +26,7 @@ def make_prediction(context_df, ground_truth_df, df, args):
     )
 
     # Chronos expects a 1D tensor for the context
-    context_tensor = torch.as_tensor(inp["target"], dtype=torch.float32)
+    context_tensor = torch.as_tensor(context, dtype=torch.float32)
 
     # Make forecast
     forecast = model.predict(context_tensor, args.prediction_length)
