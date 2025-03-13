@@ -13,7 +13,7 @@ from chronos_model.chronos_prediction import make_prediction as chronos_pred
 from moirai_model.moirai_prediction import make_prediction as moirai_pred
 from time_moe_model.time_moe_prediction import make_prediction as timemoe_pred
 
-# python -m pipeline --path "data/data_2024_2025_processed.csv" --input_column "Close" --output_column "Close" --prediction_length 12 --context_length 384 --frequency "H" --utc True --output "first_test.csv" --model_name "time_moe"
+# python -m pipeline --path "../data/data_2024_2025.csv" --input_column "Close_denoised" --output_column "Close" --prediction_length 3 --context_length 384 --frequency "H" --utc True --output "prediction_data_2024_2025.csv" --model_name "time_moe"
 
 ###############################################################################
 # Common utility functions
@@ -78,32 +78,44 @@ def sliding_window(df, context_length, prediction_length):
 
 
 def process_sliding_windows(df, args, prediction_func):
-    """
-    Processes sliding windows concurrently.
-    Calls the model-specific `prediction_func` for each window, collects results, and returns them.
-    For an hour h, take the last context_lenght (384 by default) values corresponding to hours, to predict the next prediction_length (12 by default) values for hours h, h+1, ..., h+11.
-    """
     results = []
-    # You could tune max_workers if needed:
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        future_to_window = {
-            executor.submit(prediction_func, context_df, ground_truth_df, df, args): (
-                context_df,
-                ground_truth_df,
-                index,
-            )
-            for context_df, ground_truth_df, index in sliding_window(
-                df, args.context_length, args.prediction_length
-            )
-        }
+    count = 0  # Counter for processed windows
+    total_windows = len(df) - args.context_length - args.prediction_length + 1  # Total windows to process
 
-        for future in concurrent.futures.as_completed(future_to_window):
-            context_df, ground_truth_df, idx = future_to_window[future]
-            try:
-                result = future.result()
-                results.append((context_df, ground_truth_df, result, idx))
-            except Exception as e:
-                logging.error(f"Error during prediction: {e}")
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        # Submit all tasks and keep a mapping to the window data.
+        futures_dict = {
+            executor.submit(prediction_func, context_df, ground_truth_df, df, args): 
+            (context_df, ground_truth_df, index)
+            for context_df, ground_truth_df, index in sliding_window(df, args.context_length, args.prediction_length)
+        }
+        
+        # Use a loop with a timeout to periodically check progress.
+        remaining = set(futures_dict.keys())
+        while remaining:
+            # Wait up to 60 seconds for at least one future to complete.
+            done, remaining = concurrent.futures.wait(
+                remaining, timeout=60, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            for future in done:
+                context_df, ground_truth_df, idx = futures_dict[future]
+                try:
+                    result = future.result()
+                    results.append((context_df, ground_truth_df, result, idx))
+                    count += 1
+                    progress = (count / total_windows) * 100
+                    logging.info(
+                        f"Processed {count}/{total_windows} windows ({progress:.2f}%)."
+                    )
+                    # Every 100 processed windows, save incremental backup.
+                    if count % 100 == 0:
+                        with open("results_backup_incremental.pkl", "wb") as f:
+                            pickle.dump(results, f)
+                        logging.info(
+                            f"Incremental backup saved at {count} windows."
+                        )
+                except Exception as e:
+                    logging.error(f"Error during prediction for window at {idx}: {e}")
 
     return results
 
@@ -138,28 +150,16 @@ def main(args):
     prediction_func = model_map[args.model_name]
 
     # 4. Sliding window predictions (concurrent)
+    logging.info("Starting sliding window predictions...")
     results = process_sliding_windows(df, args, prediction_func)
     logging.info(f"Sliding Window processing finished. {len(results)} windows found.")
-
-    # Save results for backup
-    with open("results_backup.pkl", "wb") as f:
-        pickle.dump(results, f)
-    logging.info("Intermediate results saved successfully.")
 
     # 5. Build final result dataframe
     all_results = []
 
-    print("\n Pipeline")
 
     for context_df, ground_truth_df, result, idx in results:
-        # result is either a single array or a dict with median, q1, q3
-        print("ground truth values")
-        print(ground_truth_df[args.output_column].values)
-        print(result)
-        print("result")
-
         final_predictions = result
-
         # Compute APE, SIGN, etc.
         APE = [
             100 * abs(x_real - x_pred) / abs(x_real)
