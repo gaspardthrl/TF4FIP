@@ -155,10 +155,10 @@ def preprocess(df, dfDaily=None):
         df["DistanceToEMM60"] = ((df["Close"] - df["EMM_60"]) / df["EMM_60"]) * 100
 
         df["Close_denoised"] = wavelet_denoise(df.copy())["Close"]
-        print(df.isna().sum())
         df = df.tail(-max(df.isna().sum()))
         return df
     else:
+        df["Close_denoised"] = wavelet_denoise(df.copy())["Close"]
         return df
   
 def main():
