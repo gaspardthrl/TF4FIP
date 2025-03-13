@@ -107,7 +107,6 @@ def process_sliding_windows(df, args, prediction_func):
 
     return results
 
-
 def main(args):
     setup_logging()
     logging.info("Starting the forecasting process...")
@@ -149,8 +148,16 @@ def main(args):
 
     # 5. Build final result dataframe
     all_results = []
+
+    print("\n Pipeline")
+
     for context_df, ground_truth_df, result, idx in results:
         # result is either a single array or a dict with median, q1, q3
+        print("ground truth values")
+        print(ground_truth_df[args.output_column].values)
+        print(result)
+        print("result")
+
         final_predictions = result
 
         # Compute APE, SIGN, etc.
@@ -168,40 +175,12 @@ def main(args):
             for real, pred, base_val in zip(
                 ground_truth_df[args.output_column].values,
                 final_predictions,
-                [context_df[args.output_column].values[-1]] * len(final_predictions),
+                [context_df[args.output_column].values[-1]]
+                * len(
+                    final_predictions
+                ),  # last value of the context_df repeated for the length of the predictions
             )
         ]
-
-        MATRIX = list(
-            map(
-                lambda x: (
-                    [1, 0, 0, 0]
-                    if np.sign(x[2] - x[0]) == np.sign(x[2] - x[1])
-                    and np.sign(x[2] - x[0]) != -1
-                    else (
-                        [0, 1, 0, 0]
-                        if np.sign(x[2] - x[0]) == np.sign(x[2] - x[1])
-                        and np.sign(x[2] - x[0]) == -1
-                        else (
-                            [0, 0, 1, 0]
-                            if np.sign(x[2] - x[0]) != np.sign(x[2] - x[1])
-                            and np.sign(x[2] - x[0]) == -1
-                            else (
-                                [0, 0, 0, 1]
-                                if np.sign(x[2] - x[0]) != np.sign(x[2] - x[1])
-                                and np.sign(x[2] - x[0]) != -1
-                                else [0, 0, 0, 0]
-                            )
-                        )
-                    )
-                ),
-                zip(
-                    ground_truth_df[args.output_column].values,
-                    result,
-                    [context_df[args.output_column].values[-1]] * len(result),
-                ),
-            )
-        )
 
         SCORE = [a * s for a, s in zip(APE, SIGN)]
 
@@ -212,18 +191,6 @@ def main(args):
                 "APE": APE,
                 "SIGN": SIGN,
                 "Result": final_predictions,
-                "MATRIX_1": MATRIX[0],
-                "MATRIX_2": MATRIX[1],
-                "MATRIX_3": MATRIX[2],
-                "MATRIX_4": MATRIX[3],
-                "MATRIX_5": MATRIX[4],
-                "MATRIX_6": MATRIX[5],
-                "MATRIX_7": MATRIX[6],
-                "MATRIX_8": MATRIX[7],
-                "MATRIX_9": MATRIX[8],
-                "MATRIX_10": MATRIX[9],
-                "MATRIX_11": MATRIX[10],
-                "MATRIX_12": MATRIX[11],
             }
         )
 
@@ -289,7 +256,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prediction_length",
         type=int,
-        default=12,
+        default=3,  # 12 only required for bucket analyis
         help="Length of the horizon to forecast.",
     )
     parser.add_argument(

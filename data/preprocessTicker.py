@@ -34,18 +34,19 @@ def wavelet_denoise(df, wavelet='db1', level=1):
     return denoised_df
 
 def preprocess(df, dfDaily=None):
-    # Confirm 'Datetime' exists in the DataFrame
-    if "Datetime" not in df.columns:
-        raise ValueError("The 'Datetime' column is missing from the data.")
-
-    # Set index and convert to datetime
-    df.set_index("Datetime", inplace=True)
     
     # Force datetime conversion with `utc=True` for compatibility
     df.index = pd.to_datetime(df.index, utc=True, errors='coerce')
 
     # Convert to US/Eastern for local timezone analysis
     df.index = df.index.tz_convert('US/Eastern')
+
+    # Forward fill for weekends
+    print("size before: ", len(df))
+    df = df.asfreq('h')
+    print("size after as freq: ", len(df))
+    df = df.interpolate(method="time")
+    print("size after interpolate: ", len(df))
 
     # Create additional time-based features
     df["Week"] = df.index.isocalendar().week

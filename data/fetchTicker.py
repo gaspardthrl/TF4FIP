@@ -16,7 +16,7 @@ def fetch(ticker="ES=F", frequency="1h", session_start=None, session_end=None):
     )
 
     data.index = data.index.tz_convert('US/Eastern')
-
+    data.columns = data.columns.droplevel("Ticker")
     # Reset index to get a clean DataFrame
     data.reset_index(inplace=True)
     return data
