@@ -7,69 +7,106 @@ import torch
 from einops import rearrange
 
 
-def make_prediction(context_df, ground_truth_df, df, args):
+def make_prediction(context_list, model, args):
     """
-    Moirai-specific prediction logic.
-    We take the last `args.context_length` standardized prices (context_df)
-    to predict the next `args.prediction_length` values.
+    Generate forecasts for a batch of context windows using Moirai.
+    context_list: list of DataFrames, each representing one context window
+    model: the loaded Moirai model (e.g., MoiraiForecast)
+    args: script arguments (we need input_column, prediction_length, return_type, etc.)
     """
-    # Convert the input data
-    context = context_df[args.input_column].to_numpy()
 
-    # If GPU is selected but no CUDA available, fallback to CPU
-    backend = args.backend
-    if backend == "gpu" and not torch.cuda.is_available():
-        backend = "cpu"
-
-    # Instantiate the Moirai model
-    model = MoiraiForecast(
-        module=MoiraiModule.from_pretrained(f"Salesforce/moirai-1.1-R-base"),
-        prediction_length=args.prediction_length,
-        context_length=args.context_length,
-        patch_size=32,
-        num_samples=100,
-        target_dim=1,
-        feat_dynamic_real_dim=0,
-        past_feat_dynamic_real_dim=0,
+    # Decide on CPU/GPU device
+    device = torch.device(
+        "cuda" if (torch.cuda.is_available() and args.backend == "gpu") else "cpu"
     )
 
-    past_target = rearrange(torch.as_tensor(context, dtype=torch.float32), "t -> 1 t 1")
-    past_observed_target = torch.ones_like(past_target, dtype=torch.bool)
-    past_is_pad = torch.zeros_like(past_target, dtype=torch.bool).squeeze(-1)
+    # Prepare arrays for each batch item
+    all_past_targets = []
+    all_observed_targets = []
+    all_pads = []
+    means_stds = (
+        []
+    )  # to keep track of mean & std for each context (for de-standardization)
 
-    # Forecast
-    forecast = model(
-        past_target=past_target,
-        past_observed_target=past_observed_target,
-        past_is_pad=past_is_pad,
-    )
+    for context_df in context_list:
+        # ---- Standardize this context window ----
+        context = context_df[args.input_column].to_numpy()
+        mean_val, std_val = context.mean(), context.std()
 
-    # Handle return_type
-    if args.return_type == "median":
-        # forecast[0] => shape: (num_samples, prediction_length)
-        standardized_result = np.round(np.median(forecast[0], axis=0), decimals=4)
-        result = destandardize_predictions(standardized_result, df)
-    elif args.return_type == "median_quartile":
-        median = np.median(forecast[0], axis=0)
-        q1 = np.percentile(forecast[0], 25, axis=0)
-        q3 = np.percentile(forecast[0], 75, axis=0)
-        result = {
-            "median": np.round(destandardize_predictions(median, df), decimals=4),
-            "q1": np.round(destandardize_predictions(q1, df), decimals=4),
-            "q3": np.round(destandardize_predictions(q3, df), decimals=4),
-        }
-    else:
-        raise ValueError(f"Unknown return_type: {args.return_type}")
+        # Avoid division by zero
+        if std_val == 0:
+            std_val = 1e-8
 
-    return result
+        # Standardize
+        standardized = (context - mean_val) / std_val
 
+        # Reshape to (context_length, 1) for Moirai’s (B, T, 1) input
+        standardized = np.expand_dims(standardized, axis=-1)  # shape: (T, 1)
 
-def destandardize_predictions(standardized_predictions, df):
-    """
-    Transform standardized predictions back to the original price scale,
-    using the stats from `df["Close_denoised"]`.
-    """
-    return (
-        standardized_predictions * df["Close_denoised"].std()
-        + df["Close_denoised"].mean()
-    )
+        # Convert to torch tensor
+        standardized_tensor = torch.as_tensor(standardized, dtype=torch.float32)
+
+        # Observed target (all True) and pad (all False)
+        observed_tensor = torch.ones_like(standardized_tensor, dtype=torch.bool)
+        pad_tensor = torch.zeros_like(standardized_tensor, dtype=torch.bool)
+
+        # Append for batch stacking
+        all_past_targets.append(standardized_tensor)
+        all_observed_targets.append(observed_tensor)
+        all_pads.append(pad_tensor)
+
+        # Keep track for later de-standardization
+        means_stds.append((mean_val, std_val))
+
+    # ---- Stack everything into batched tensors ----
+    # Each will have shape (batch_size, context_length, 1)
+    batch_past_targets = torch.stack(all_past_targets, dim=0).to(device)
+    batch_observed_targets = torch.stack(all_observed_targets, dim=0).to(device)
+    batch_pads = torch.stack(all_pads, dim=0).to(device)
+
+    # Squeeze the last dimension of the pad to match Moirai’s shape if needed
+    batch_pads = batch_pads.squeeze(-1)  # shape => (batch_size, context_length)
+
+    # ---- Run the Moirai model in one forward pass (batched) ----
+    with torch.no_grad():
+        # forecast is typically a tuple/list;
+        # forecast[0] should have shape (batch_size, num_samples, prediction_length)
+        forecast = model(
+            past_target=batch_past_targets,
+            past_observed_target=batch_observed_targets,
+            past_is_pad=batch_pads,
+        )
+
+    # The first element in `forecast` is the array of generated samples
+    # shape: (batch_size, num_samples, prediction_length)
+    forecast_samples = forecast[0].cpu().numpy()
+
+    # ---- De-standardize and post-process each forecast in the batch ----
+    all_forecasts = []
+    for i in range(forecast_samples.shape[0]):
+        # forecast for i-th sample => shape (num_samples, prediction_length)
+        item_forecast = forecast_samples[i]
+        mean_val, std_val = means_stds[i]
+
+        # De-standardize all samples: shape still (num_samples, prediction_length)
+        item_forecast_destd = item_forecast * std_val + mean_val
+
+        # Now handle the 'return_type'
+        if args.return_type == "median":
+            # median over the samples axis => shape (prediction_length,)
+            final_result = np.median(item_forecast_destd, axis=0)
+        elif args.return_type == "median_quartile":
+            median = np.median(item_forecast_destd, axis=0)
+            q1 = np.percentile(item_forecast_destd, 25, axis=0)
+            q3 = np.percentile(item_forecast_destd, 75, axis=0)
+            final_result = {
+                "median": np.round(median, decimals=4),
+                "q1": np.round(q1, decimals=4),
+                "q3": np.round(q3, decimals=4),
+            }
+        else:
+            raise ValueError(f"Unknown return_type: {args.return_type}")
+
+        all_forecasts.append(final_result)
+
+    return all_forecasts

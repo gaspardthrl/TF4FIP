@@ -1,7 +1,4 @@
-# pipeline.py
-
 import argparse
-import concurrent.futures
 import logging
 import os
 import pickle
@@ -9,11 +6,13 @@ import pickle
 import numpy as np
 import pandas as pd
 import torch
+from chronos import BaseChronosPipeline
 from chronos_model.chronos_prediction import make_prediction as chronos_pred
 from moirai_model.moirai_prediction import make_prediction as moirai_pred
 from time_moe_model.time_moe_prediction import make_prediction as timemoe_pred
+from transformers import AutoModelForCausalLM
 
-# python -m pipeline --path "../data/data_2024_2025.csv" --input_column "Close_denoised" --output_column "Close" --prediction_length 3 --context_length 384 --frequency "H" --utc True --output "prediction_data_2024_2025.csv" --model_name "time_moe"
+# python -m pipeline --path "../data/data_2024_2025.csv" --input_column "Close_denoised" --output_column "Close" --prediction_length 3 --context_length 384 --frequency "H" --utc True --output "data_2024_2025_chronos.csv" --model_name "chronos"
 
 ###############################################################################
 # Common utility functions
@@ -65,61 +64,57 @@ def sliding_window(df, context_length, prediction_length):
         pred_end = context_end + prediction_length  # end of the prediction window
 
         context_df = df.iloc[start_idx:context_end]
-        ground_truth_df = df.iloc[
-            context_end:pred_end
-        ]  # prediction_df represents the actual future values that the model is trying to predict
+        ground_truth_df = df.iloc[context_end:pred_end]
 
         yield context_df, ground_truth_df, df.index[context_end]
 
 
-###############################################################################
-# Main logic
-###############################################################################
+def process_sliding_windows(df, args, predict_func, model, batch_size=64):
+    """
+    Run sliding-window predictions in batches of 64.
+    """
+    windows = list(
+        sliding_window(df, args.context_length, args.prediction_length)
+    )  # list of tuples: (context_df, ground_truth_df, idx)
+    total_windows = len(windows)
+    logging.info(f"Total windows: {total_windows}")
 
-
-def process_sliding_windows(df, args, prediction_func):
     results = []
-    count = 0  # Counter for processed windows
-    total_windows = len(df) - args.context_length - args.prediction_length + 1  # Total windows to process
+    # We'll collect DataFrames for each batch
+    for i in range(0, total_windows, batch_size):
+        batch_slice = windows[i : i + batch_size]
+        context_batch = [item[0] for item in batch_slice]  # list of context DFs
+        ground_truth_batch = [
+            item[1] for item in batch_slice
+        ]  # list of ground-truth DFs
+        idx_batch = [item[2] for item in batch_slice]  # list of indexes for logging
 
+        # Get batch predictions using our batched function
+        batch_predictions = predict_func(context_batch, model, args)
 
+        # Combine predictions with the original (context_df, ground_truth_df, idx)
+        for context_df, ground_truth_df, idx_val, forecast in zip(
+            context_batch, ground_truth_batch, idx_batch, batch_predictions
+        ):
+            results.append((context_df, ground_truth_df, forecast, idx_val))
 
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        # Submit all tasks and keep a mapping to the window data.
-        futures_dict = {
-            executor.submit(prediction_func, context_df, ground_truth_df, df, args): 
-            (context_df, ground_truth_df, index)
-            for context_df, ground_truth_df, index in sliding_window(df, args.context_length, args.prediction_length)
-        }
-        
-        # Use a loop with a timeout to periodically check progress.
-        remaining = set(futures_dict.keys())
-        while remaining:
-            # Wait up to 60 seconds for at least one future to complete.
-            done, remaining = concurrent.futures.wait(
-                remaining, timeout=60, return_when=concurrent.futures.FIRST_COMPLETED
+        # Log progress
+        current_count = min(i + batch_size, total_windows)
+        progress = (current_count / total_windows) * 100
+        logging.info(
+            f"BATCH {i // batch_size + 1} => Processed {current_count}/{total_windows} windows ({progress:.2f}%)."
+        )
+
+        # Save incremental backup every 100 or so windows
+        if current_count % 100 == 0:
+            with open("results_backup_incremental.pkl", "wb") as f:
+                pickle.dump(results, f)
+            logging.info(
+                f"Incremental backup saved at {current_count} windows (batched)."
             )
-            for future in done:
-                context_df, ground_truth_df, idx = futures_dict[future]
-                try:
-                    result = future.result()
-                    results.append((context_df, ground_truth_df, result, idx))
-                    count += 1
-                    progress = (count / total_windows) * 100
-                    logging.info(
-                        f"Processed {count}/{total_windows} windows ({progress:.2f}%)."
-                    )
-                    # Every 100 processed windows, save incremental backup.
-                    if count % 100 == 0:
-                        with open("results_backup_incremental.pkl", "wb") as f:
-                            pickle.dump(results, f)
-                        logging.info(
-                            f"Incremental backup saved at {count} windows."
-                        )
-                except Exception as e:
-                    logging.error(f"Error during prediction for window at {idx}: {e}")
 
     return results
+
 
 def main(args):
     setup_logging()
@@ -149,25 +144,72 @@ def main(args):
             f"Unknown model_name: {args.model_name}. "
             "Valid choices are: moirai, chronos, time_moe."
         )
-    prediction_func = model_map[args.model_name]
 
-    # 4. Sliding window predictions (concurrent)
+    predict_func = model_map[args.model_name]
+
+    device = "cuda" if torch.cuda.is_available() and args.backend == "gpu" else "cpu"
+    model = None
+
+    # 4. We load the selected model once and then run sliding window predictions
+    if args.model_name == "time_moe":
+        model = AutoModelForCausalLM.from_pretrained(
+            "Maple728/TimeMoE-200M",
+            device_map=device,
+            trust_remote_code=True,
+        )
+        model.to(device)
+    elif args.model_name == "moirai":
+        model = MoiraiForecast(
+            module=MoiraiModule.from_pretrained(f"Salesforce/moirai-1.1-R-base"),
+            prediction_length=args.prediction_length,
+            context_length=args.context_length,
+            patch_size=32,
+            num_samples=100,
+            target_dim=1,
+            feat_dynamic_real_dim=0,
+            past_feat_dynamic_real_dim=0,
+        )
+    elif args.model_name == "chronos":
+        model = BaseChronosPipeline.from_pretrained(
+            "amazon/chronos-bolt-small",
+            device_map=device,
+            torch_dtype=torch.bfloat16,
+        )
+    else:
+        logging.error("Unknown model_name. Exiting...")
+        return
+
+    logging.info(f"Loading {args.model_name} model once for batched inference...")
+
+    # Start predicition in batches
     logging.info("Starting sliding window predictions...")
-    results = process_sliding_windows(df, args, prediction_func)
-    logging.info(f"Sliding Window processing finished. {len(results)} windows found.")
+    results = process_sliding_windows(
+        df=df, args=args, model=model, predict_func=predict_func, batch_size=64
+    )
+    logging.info(
+        f"Batched sliding window processing finished. {len(results)} windows found."
+    )
 
     # 5. Build final result dataframe
     all_results = []
+    for context_df, ground_truth_df, forecast, idx in results:
+        # `forecast` here is either a NumPy array or a dict with median/quartiles
+        print("forecast values: ", forecast)
+        if isinstance(forecast, dict):
+            logging.error("The median_quartile approach may contain errors.")
+            if "median" in forecast:
+                final_predictions = forecast["median"]
+            else:
+                raise ValueError("Unknown format for 'forecast' dictionary.")
+        else:
+            final_predictions = forecast
 
-
-    for context_df, ground_truth_df, result, idx in results:
-        final_predictions = result
         # Compute APE, SIGN, etc.
+        real_values = ground_truth_df[args.output_column].values
+
         APE = [
-            100 * abs(x_real - x_pred) / abs(x_real)
-            for x_real, x_pred in zip(
-                ground_truth_df[args.output_column].values, final_predictions
-            )
+            100 * abs(x_real - x_pred) / (abs(x_real) if x_real != 0 else 1e-8)
+            for x_real, x_pred in zip(real_values, final_predictions)
         ]
 
         SIGN = [
@@ -175,12 +217,10 @@ def main(args):
                 1 if np.sign(base_val - real) == np.sign(base_val - pred) else -1
             )  # 1 if the prediction is in the same direction as the real price, -1 otherwise
             for real, pred, base_val in zip(
-                ground_truth_df[args.output_column].values,
+                real_values,
                 final_predictions,
-                [context_df[args.output_column].values[-1]]
-                * len(
-                    final_predictions
-                ),  # last value of the context_df repeated for the length of the predictions
+                # last value of the context_df repeated for the length of the predictions
+                [context_df[args.output_column].values[-1]] * len(final_predictions),
             )
         ]
 
@@ -203,7 +243,7 @@ def main(args):
     results_df.drop(["context_end"], axis=1, inplace=True)
     results_df.index.name = "Datetime"
 
-    # Merge with original df (optional)
+    # Merge with original df
     final_df = pd.concat([df, results_df], axis=1)
 
     # Save to CSV
@@ -258,7 +298,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prediction_length",
         type=int,
-        default=3,  # 12 only required for bucket analyis
+        default=3,
         help="Length of the horizon to forecast.",
     )
     parser.add_argument(

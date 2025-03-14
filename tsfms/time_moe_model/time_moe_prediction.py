@@ -5,101 +5,79 @@ from transformers import AutoModelForCausalLM
 # python -m pipeline --path "../data/data_2024_2025_processed.csv" --input_column "Close" --output_column "Close" --prediction_length 12 --context_length 384 --frequency "H" --utc True --output "first_test.csv" --model_name "time_moe"
 
 
-def batched_make_prediction(context_list, args, model):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # Standardize each context and create a batch tensor.
-    standardized_contexts = []
-    for context_df in context_list:
-        context = context_df[args.input_column].to_numpy()
-        # Standardize each context individually.
-        standardized = (context - context.mean()) / context.std()
-        standardized_contexts.append(torch.tensor(standardized, dtype=torch.float32))
-    
-    # Stack into a batch and move to the device.
-    context_tensor = torch.stack(standardized_contexts).to(device)
+def make_prediction(
+    context_list,
+    model,
+    args,
+):
+    """
+    Generate forecasts for a batch of context windows using TimeMoE.
+    context_list: list of DataFrames, each representing one context window
+    model: the loaded TimeMoE model (AutoModelForCausalLM)
+    args: script arguments (we need input_column, prediction_length, return_type, etc.)
+    """
 
-    # Generate forecast for the whole batch.
-    forecast_standardized = model.generate(
-        context_tensor, max_new_tokens=args.prediction_length
+    device = torch.device(
+        "cuda" if (torch.cuda.is_available() and args.backend == "gpu") else "cpu"
     )
 
-    # Post-process each forecast: de-standardize and keep only the forecast part.
-    results = []
-    for i, forecast_tensor in enumerate(forecast_standardized):
-        # Note: The context for each sample needs its own mean and std.
-        context = context_list[i][args.input_column].to_numpy()
-        mean, std = context.mean(), context.std()
-        forecast = forecast_tensor.cpu().detach().numpy() * std + mean
-        forecast = forecast[-args.prediction_length:]
+    # Prepare a list to store forecast outputs
+    all_forecasts = []
 
+    # For each window: standardize, keep track of mean and std for de-standardizing
+    standardized_inputs = []
+    means_stds = []
+    for context_df in context_list:
+        context = context_df[args.input_column].to_numpy()
+        mean_val, std_val = context.mean(), context.std()
+        # Handle edge case if std_val is 0 to avoid NaN
+        if std_val == 0:
+            std_val = 1e-8
+        standardized = (context - mean_val) / std_val
+        standardized_inputs.append(torch.tensor(standardized, dtype=torch.float32))
+        means_stds.append((mean_val, std_val))
+
+    # Stack into a single batch tensor
+    # shape: (batch_size, context_length)
+    batch_tensor = torch.stack(standardized_inputs).to(device)
+
+    # Run generation for the entire batch
+    with torch.no_grad():
+        forecast_standardized = model.generate(
+            batch_tensor, max_new_tokens=args.prediction_length
+        )
+        # forecast_standardized: shape is (batch_size, context_length + prediction_length)
+        # Because model outputs the entire sequence. We'll pick off the last "prediction_length" tokens.
+
+    # De-standardize each forecast in the batch
+    # We iterate along the batch dimension of forecast_standardized
+    for i, forecast_tensor in enumerate(forecast_standardized):
+        mean_val, std_val = means_stds[i]
+        # Convert to numpy
+        forecast_np = forecast_tensor.detach().cpu().numpy()
+
+        # The model output length is (context_length + prediction_length)
+        # We only want the last `prediction_length` points
+        forecast_np = forecast_np[-args.prediction_length :]
+
+        # De-standardize
+        forecast_np = forecast_np * std_val + mean_val
+
+        # Now handle the 'return_type'
         if args.return_type == "median":
-            result = forecast
+            final_result = forecast_np
         elif args.return_type == "median_quartile":
-            median = np.median(forecast, axis=0)
-            q1 = np.percentile(forecast, 25, axis=0)
-            q3 = np.percentile(forecast, 75, axis=0)
-            result = {
+            median = np.median(forecast_np, axis=0)
+            q1 = np.percentile(forecast_np, 25, axis=0)
+            q3 = np.percentile(forecast_np, 75, axis=0)
+            final_result = {
                 "median": np.round(median, decimals=4),
                 "q1": np.round(q1, decimals=4),
                 "q3": np.round(q3, decimals=4),
             }
         else:
             raise ValueError(f"Unknown return_type: {args.return_type}")
-        results.append(result)
 
-    return results
+        all_forecasts.append(final_result)
 
-# def make_prediction(context_df, ground_truth_df, df, args):
-#     """
-#     Time-MoE-specific prediction logic.
-#     We take the last `args.context_length` standardized prices (context_df)
-#     to predict the next `args.prediction_length` values.
-#     """
-
-#     # Set the device to GPU if available
-#     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-#     # Time-MoE model requires standardized context
-#     context = context_df[args.input_column].to_numpy()
-#     context_standardized = (context - context.mean()) / context.std()
-#     context_standardized_tensor = torch.tensor(
-#         context_standardized, dtype=torch.float32, device=device
-#     ).unsqueeze(0)
-
-#     # Instantiate the Time-MoE model
-#     model_timemoe = AutoModelForCausalLM.from_pretrained(
-#         "Maple728/TimeMoE-200M",
-#         device_map=device,
-#         trust_remote_code=True,
-#     )
-
-#     # Generate forecast, the output is standardized
-#     forecast_standardized = model_timemoe.generate(
-#         context_standardized_tensor, max_new_tokens=args.prediction_length
-#     )
-
-#     # De-standardize the forecast
-#     forecast = forecast_standardized * context.std() + context.mean()
-#     forecast = (
-#         forecast.squeeze().numpy()
-#     )  # Remove the batch dimension and the tensor shape
-#     forecast = forecast[
-#         -args.prediction_length :
-#     ]  # Keep only the last prediction_length values. Meaning, we remove the context_length values from the output
-
-#     if args.return_type == "median":
-#         result = forecast
-#     elif args.return_type == "median_quartile":
-#         median = np.median(forecast, axis=0)
-#         q1 = np.percentile(forecast, 25, axis=0)
-#         q3 = np.percentile(forecast, 75, axis=0)
-#         result = {
-#             "median": np.round(median, decimals=4),
-#             "q1": np.round(q1, decimals=4),
-#             "q3": np.round(q3, decimals=4),
-#         }
-#     else:
-#         raise ValueError(f"Unknown return_type: {args.return_type}")
-
-#     return result
+    return all_forecasts
