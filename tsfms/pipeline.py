@@ -1,4 +1,4 @@
-# main.py
+# pipeline.py
 
 import argparse
 import concurrent.futures
@@ -81,6 +81,8 @@ def process_sliding_windows(df, args, prediction_func):
     results = []
     count = 0  # Counter for processed windows
     total_windows = len(df) - args.context_length - args.prediction_length + 1  # Total windows to process
+
+
 
     with concurrent.futures.ProcessPoolExecutor() as executor:
         # Submit all tasks and keep a mapping to the window data.
